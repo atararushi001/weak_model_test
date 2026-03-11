@@ -1,11 +1,18 @@
 import matplotlib
 matplotlib.use("Agg")
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report
+)
 
 # ============================================================
 # STEP 1: LOAD DATA
@@ -31,18 +38,19 @@ print("Dataset size:", len(X))
 print("Sensitive ratio:", y.mean())
 
 # ============================================================
-# STEP 2: SPLIT FIRST (NO LEAKAGE)
+# STEP 2: TRAIN TEST SPLIT
 # ============================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
-    test_size=0.2,        # 80/20 split
+    test_size=0.1,
     stratify=y,
-    random_state=42
+    random_state=None
 )
 
 X_train = X_train.reset_index(drop=True)
 y_train = y_train.reset_index(drop=True)
+
 X_test = X_test.reset_index(drop=True)
 y_test = y_test.reset_index(drop=True)
 
@@ -50,57 +58,21 @@ N_train = len(X_train)
 N_test = len(X_test)
 
 # ============================================================
-# PRINT DETAILED SPLIT STATISTICS
+# PRINT DATASET STATISTICS
 # ============================================================
 
-total = N_train + N_test
+print("\n================ DATASET SPLIT =================")
 
-train_sensitive = y_train.sum()
-train_normal    = (y_train == 0).sum()
-test_sensitive  = y_test.sum()
-test_normal     = (y_test == 0).sum()
+print("Train size:", N_train)
+print("Test size :", N_test)
 
-print("\n" + "="*55)
-print("           DATASET SPLIT STATISTICS")
-print("="*55)
+print("Train sensitive:", y_train.sum())
+print("Test sensitive :", y_test.sum())
 
-print(f"\n{'OVERALL':}")
-print(f"  Total requests         : {total}")
-print(f"  Total sensitive        : {int(y.sum())} ({y.mean()*100:.2f}%)")
-print(f"  Total normal           : {int((y==0).sum())} ({(1-y.mean())*100:.2f}%)")
-
-print(f"\n{'TRAINING SET (80%)':}")
-print(f"  Total requests         : {N_train} ({N_train/total*100:.1f}%)")
-print(f"  Sensitive requests     : {int(train_sensitive)} ({train_sensitive/N_train*100:.2f}%)")
-print(f"  Normal requests        : {int(train_normal)} ({train_normal/N_train*100:.2f}%)")
-
-print(f"\n{'TESTING SET (20%)':}")
-print(f"  Total requests         : {N_test} ({N_test/total*100:.1f}%)")
-print(f"  Sensitive requests     : {int(test_sensitive)} ({test_sensitive/N_test*100:.2f}%)")
-print(f"  Normal requests        : {int(test_normal)} ({test_normal/N_test*100:.2f}%)")
-
-print("="*55)
+print("===============================================")
 
 # ============================================================
-# SAVE TRAIN/TEST TO CSV (two sheets in one Excel file)
-# ============================================================
-
-train_df = X_train.copy()
-train_df['label'] = y_train
-train_df['split'] = 'train'
-
-test_df = X_test.copy()
-test_df['label'] = y_test
-test_df['split'] = 'test'
-
-with pd.ExcelWriter("train_test_split.xlsx", engine='openpyxl') as writer:
-    train_df.to_excel(writer, sheet_name='Training', index=False)
-    test_df.to_excel(writer, sheet_name='Testing', index=False)
-
-print("\nSaved train_test_split.xlsx with Training and Testing sheets")
-
-# ============================================================
-# STEP 3: TRAIN WEAK MODELS ON FULL TRAIN DATA
+# STEP 3: TRAIN WEAK MODELS
 # ============================================================
 
 NUM_WEAK_MODELS = 10
@@ -110,9 +82,10 @@ prob_matrix = np.zeros((N_train, NUM_WEAK_MODELS))
 
 weak_auc_scores = []
 
-print("\nTraining weak models on FULL training data...")
+print("\nTraining weak models...")
 
 for i in range(NUM_WEAK_MODELS):
+
     clf = RandomForestClassifier(
         n_estimators=3,
         max_depth=3,
@@ -124,7 +97,7 @@ for i in range(NUM_WEAK_MODELS):
 
     clf.fit(X_train, y_train)
 
-    probs = clf.predict_proba(X_train)[:, 1]
+    probs = clf.predict_proba(X_train)[:,1]
     preds = (probs >= 0.5).astype(int)
 
     prob_matrix[:, i] = probs
@@ -135,13 +108,11 @@ for i in range(NUM_WEAK_MODELS):
 
     print(f"Weak Model {i+1} Train AUC = {auc_i:.4f}")
 
-print("\nMean Weak AUC (Train) = {:.4f}".format(np.mean(weak_auc_scores)))
-print("Std  Weak AUC (Train) = {:.4f}".format(np.std(weak_auc_scores)))
+print("\nMean Weak AUC =", np.mean(weak_auc_scores))
+print("Std Weak AUC =", np.std(weak_auc_scores))
 
 # ============================================================
-# STEP 4: HARDNESS USING DISAGREEMENT
-# 0 = Hardest
-# 10 = Easiest
+# STEP 4: HARDNESS (STD DISAGREEMENT)
 # ============================================================
 
 std_prob = prob_matrix.std(axis=1)
@@ -161,11 +132,65 @@ ranking_df = pd.DataFrame({
     "rank_0_10": rank_0_10
 })
 
-print("\nRank distribution (0 = hard, 10 = easy):")
+print("\nRank distribution")
 print(ranking_df["rank_0_10"].value_counts().sort_index())
 
 # ============================================================
-# STEP 5: PDF SAMPLING FUNCTION
+# SAVE CSV WITH PROBABILITIES + STD + RANK
+# ============================================================
+
+details_df = pd.DataFrame()
+
+details_df["row_id"] = np.arange(N_train)
+details_df["true_label"] = y_train
+details_df["std_prob"] = std_prob
+details_df["rank_0_10"] = rank_0_10
+
+for i in range(NUM_WEAK_MODELS):
+    details_df[f"prob_model_{i+1}"] = prob_matrix[:,i]
+
+details_df.to_csv("request_hardness_details.csv", index=False)
+
+print("\nSaved request_hardness_details.csv")
+
+# ============================================================
+# STD HISTOGRAM (ALL REQUESTS)
+# ============================================================
+
+plt.figure(figsize=(8,5))
+
+plt.hist(std_prob, bins=40)
+
+plt.title("STD Distribution of Weak Model Probabilities")
+plt.xlabel("STD")
+plt.ylabel("Number of Requests")
+
+plt.savefig("std_histogram_all_requests.png")
+plt.close()
+
+print("Saved std_histogram_all_requests.png")
+
+# ============================================================
+# STD HISTOGRAM (Sensitive vs Normal)
+# ============================================================
+
+plt.figure(figsize=(8,5))
+
+plt.hist(std_prob[y_train==0], bins=40, alpha=0.5, label="Normal")
+plt.hist(std_prob[y_train==1], bins=40, alpha=0.5, label="Sensitive")
+
+plt.legend()
+plt.title("STD Distribution (Sensitive vs Normal)")
+plt.xlabel("STD")
+plt.ylabel("Number of Requests")
+
+plt.savefig("std_histogram_sensitive_vs_normal.png")
+plt.close()
+
+print("Saved std_histogram_sensitive_vs_normal.png")
+
+# ============================================================
+# STEP 5: HARDNESS SAMPLING
 # ============================================================
 
 D = 80
@@ -176,35 +201,17 @@ ranking_df["r"] = np.arange(1, N_train + 1)
 
 ranking_df["P_r"] = D * np.exp(-(ranking_df["r"] ** x) / N_train)
 ranking_df["P_r"] /= ranking_df["P_r"].sum()
-
-# Optional visualization
-plt.figure(figsize=(8, 5))
-plt.plot(ranking_df["r"], ranking_df["P_r"])
-plt.title("Hardness-Based Sampling Probability")
-plt.xlabel("Rank (Hard → Easy)")
-plt.ylabel("P(r)")
-plt.grid(True)
-plt.savefig("sampling_curve.png")
-plt.close()
-from sklearn.metrics import (
-    f1_score,
-    roc_auc_score,
-    confusion_matrix,
-    classification_report,
-    precision_recall_curve
-)
-
 # ============================================================
-# STEP 6: MULTIPLE HARDNESS-AWARE ENSEMBLE RUNS
+# STEP 6: TRAIN HARDNESS MODELS
 # ============================================================
 # ============================================================
-# STEP 6: TRAIN 5 HARDNESS MODELS (NO ENSEMBLE)
+# STEP 6: TRAIN HARDNESS MODELS
 # ============================================================
 
-NUM_MODELS = 10
+NUM_MODELS = 30
 TRAIN_SIZE = int(0.9 * N_train)
 
-print("\nTraining 5 hardness-based models...")
+print("\nTraining hardness-based models...")
 
 for m in range(NUM_MODELS):
 
@@ -234,52 +241,88 @@ for m in range(NUM_MODELS):
         y_train.iloc[sampled_idx]
     )
 
-    # ======================================================
-    # PREDICTIONS
-    # ======================================================
+    # ========================================================
+    # TRAINING PERFORMANCE (SAMPLED DATA)
+    # ========================================================
 
-    probs = clf.predict_proba(X_test)[:,1]
-    preds = (probs >= 0.5).astype(int)
+    train_sample_probs = clf.predict_proba(
+        X_train.iloc[sampled_idx]
+    )[:,1]
 
-    # ======================================================
-    # METRICS
-    # ======================================================
+    train_sample_preds = (train_sample_probs >= 0.5).astype(int)
 
-    f1 = f1_score(y_test, preds)
-    auc = roc_auc_score(y_test, probs)
+    train_sample_auc = roc_auc_score(
+        y_train.iloc[sampled_idx],
+        train_sample_probs
+    )
 
-    print("F1 :", round(f1,4))
-    print("AUC:", round(auc,4))
+    print("\n--- Training (Sampled Data) ---")
+    print("AUC:", round(train_sample_auc,4))
 
-    # ======================================================
-    # CONFUSION MATRIX
-    # ======================================================
-
-    cm = confusion_matrix(y_test, preds)
+    cm = confusion_matrix(
+        y_train.iloc[sampled_idx],
+        train_sample_preds
+    )
 
     TN, FP, FN, TP = cm.ravel()
 
-    precision = TP / (TP + FP)
-    recall = TP / (TP + FN)
-    specificity = TN / (TN + FP)
-
-    fpr = FP / (FP + TN)
-    fnr = FN / (FN + TP)
-
-    print("\nConfusion Matrix")
+    print("Confusion Matrix")
     print(cm)
 
-    print("\nTrue Positive:", TP)
+    print("True Positive:", TP)
     print("True Negative:", TN)
     print("False Positive:", FP)
     print("False Negative:", FN)
 
-    print("\nPrecision:", precision)
-    print("Recall:", recall)
-    print("Specificity:", specificity)
+    # ========================================================
+    # TRAINING PERFORMANCE (FULL TRAIN DATA)
+    # ========================================================
 
-    print("False Positive Rate:", fpr)
-    print("False Negative Rate:", fnr)
+    train_full_probs = clf.predict_proba(X_train)[:,1]
+    train_full_preds = (train_full_probs >= 0.5).astype(int)
+
+    train_full_auc = roc_auc_score(y_train, train_full_probs)
+
+    print("\n--- Training (Full Dataset) ---")
+    print("AUC:", round(train_full_auc,4))
+
+    cm = confusion_matrix(y_train, train_full_preds)
+
+    TN, FP, FN, TP = cm.ravel()
+
+    print("Confusion Matrix")
+    print(cm)
+
+    print("True Positive:", TP)
+    print("True Negative:", TN)
+    print("False Positive:", FP)
+    print("False Negative:", FN)
+
+    # ========================================================
+    # TEST PERFORMANCE
+    # ========================================================
+
+    test_probs = clf.predict_proba(X_test)[:,1]
+    test_preds = (test_probs >= 0.5).astype(int)
+
+    test_auc = roc_auc_score(y_test, test_probs)
+    f1 = f1_score(y_test, test_preds)
+
+    print("\n--- Testing ---")
+    print("AUC:", round(test_auc,4))
+    print("F1 :", round(f1,4))
+
+    cm = confusion_matrix(y_test, test_preds)
+
+    TN, FP, FN, TP = cm.ravel()
+
+    print("Confusion Matrix")
+    print(cm)
+
+    print("True Positive:", TP)
+    print("True Negative:", TN)
+    print("False Positive:", FP)
+    print("False Negative:", FN)
 
     print("\nClassification Report")
-    print(classification_report(y_test, preds))
+    print(classification_report(y_test, test_preds))
