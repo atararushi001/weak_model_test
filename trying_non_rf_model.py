@@ -6,13 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_auc_score,
-    f1_score,
-    confusion_matrix,
-    classification_report,
-    precision_recall_curve
-)
+from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, classification_report, precision_recall_curve
 
 from sklearn.ensemble import (
     RandomForestClassifier,
@@ -24,7 +18,7 @@ from sklearn.ensemble import (
 from sklearn.linear_model import LogisticRegression
 
 # ============================================================
-# STEP 1: LOAD DATASET
+# LOAD DATA
 # ============================================================
 
 df = pd.read_csv("dataset/features_matrix.csv")
@@ -48,7 +42,7 @@ print("Dataset size:", len(X))
 print("Sensitive ratio:", y.mean())
 
 # ============================================================
-# STEP 2: TRAIN TEST SPLIT
+# TRAIN TEST SPLIT
 # ============================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -63,7 +57,7 @@ print("Train size:", len(X_train))
 print("Test size:", len(X_test))
 
 # ============================================================
-# STEP 3: DEFINE MODELS
+# MODELS
 # ============================================================
 
 rf = RandomForestClassifier(
@@ -101,7 +95,7 @@ hgb = HistGradientBoostingClassifier(
 )
 
 # ============================================================
-# STEP 4: TRAIN MODELS
+# TRAIN MODELS
 # ============================================================
 
 print("\nTraining Random Forest...")
@@ -117,7 +111,7 @@ print("Training HistGradientBoosting...")
 hgb.fit(X_train, y_train)
 
 # ============================================================
-# STEP 5: PREDICT PROBABILITIES
+# MODEL PROBABILITIES
 # ============================================================
 
 rf_prob = rf.predict_proba(X_test)[:,1]
@@ -126,15 +120,10 @@ gb_prob = gb.predict_proba(X_test)[:,1]
 hgb_prob = hgb.predict_proba(X_test)[:,1]
 
 # ============================================================
-# STEP 6: STACKING (META MODEL)
+# STACKING META MODEL
 # ============================================================
 
-stack_X = np.vstack((
-    rf_prob,
-    et_prob,
-    gb_prob,
-    hgb_prob
-)).T
+stack_X = np.vstack((rf_prob, et_prob, gb_prob, hgb_prob)).T
 
 meta_model = LogisticRegression(max_iter=1000)
 
@@ -143,7 +132,7 @@ meta_model.fit(stack_X, y_test)
 ensemble_prob = meta_model.predict_proba(stack_X)[:,1]
 
 # ============================================================
-# STEP 7: THRESHOLD OPTIMIZATION
+# FIND BEST THRESHOLD
 # ============================================================
 
 precision, recall, thresholds = precision_recall_curve(
@@ -160,11 +149,11 @@ print("\nBest threshold:", best_threshold)
 ensemble_pred = (ensemble_prob >= best_threshold).astype(int)
 
 # ============================================================
-# STEP 8: FINAL EVALUATION
+# FINAL METRICS
 # ============================================================
 
-f1 = f1_score(y_test, ensemble_pred)
 roc = roc_auc_score(y_test, ensemble_prob)
+f1 = f1_score(y_test, ensemble_pred)
 
 print("\n===== FINAL ENSEMBLE PERFORMANCE =====")
 
@@ -175,7 +164,7 @@ print("\nClassification Report:\n")
 print(classification_report(y_test, ensemble_pred))
 
 # ============================================================
-# STEP 9: CONFUSION MATRIX
+# CONFUSION MATRIX
 # ============================================================
 
 cm = confusion_matrix(y_test, ensemble_pred)
@@ -194,7 +183,7 @@ plt.tight_layout()
 plt.savefig("confusion_matrix.png")
 
 # ============================================================
-# STEP 10: FEATURE IMPORTANCE (RF)
+# FEATURE IMPORTANCE (RF)
 # ============================================================
 
 importances = rf.feature_importances_
