@@ -55,12 +55,19 @@ y_test=y_test.reset_index(drop=True)
 print("\nTrain size:",len(X_train))
 print("Test size:",len(X_test))
 
+# Save train/test split
+split_df = pd.concat([
+    pd.DataFrame(X_train).assign(label=y_train, split="train"),
+    pd.DataFrame(X_test).assign(label=y_test, split="test")
+])
+
+split_df.to_csv("train_test_requests.csv",index=False)
+
 # ============================================================
-# STEP 3: WEAK MODELS (FOR HARDNESS)
+# STEP 3: WEAK MODELS
 # ============================================================
 
 NUM_WEAK_MODELS=10
-
 prob_matrix=np.zeros((len(X_train),NUM_WEAK_MODELS))
 
 print("\nTraining weak models...")
@@ -78,7 +85,6 @@ for i in range(NUM_WEAK_MODELS):
     clf.fit(X_train,y_train)
 
     probs=clf.predict_proba(X_train)[:,1]
-
     prob_matrix[:,i]=probs
 
 # ============================================================
@@ -102,6 +108,14 @@ ranking_df=pd.DataFrame({
     "rank":rank_0_10
 })
 
+# Add weak model probabilities
+for i in range(NUM_WEAK_MODELS):
+    ranking_df[f"weak_prob_model_{i+1}"]=prob_matrix[:,i]
+
+ranking_df.to_csv("request_hardness_details.csv",index=False)
+
+print("\nSaved request_hardness_details.csv")
+
 print("\nRank distribution")
 print(ranking_df["rank"].value_counts().sort_index())
 
@@ -115,7 +129,10 @@ normal_idx = ranking_df[ranking_df.true_label==0].row_id.values
 n_sensitive=len(sensitive_idx)
 
 np.random.seed(42)
+# normal_sample=np.random.choice(normal_idx,n_sensitive,replace=False)
 normal_sample=np.random.choice(normal_idx,n_sensitive,replace=False)
+
+
 
 final_idx=np.concatenate([sensitive_idx,normal_sample])
 
@@ -127,9 +144,18 @@ print("Total:",len(final_idx))
 X_balanced=X_train.iloc[final_idx]
 y_balanced=y_train.iloc[final_idx]
 
+# Save which requests used in training
+train_used = pd.DataFrame({
+    "row_id":final_idx,
+    "label":y_balanced
+})
+
+train_used.to_csv("balanced_training_requests.csv",index=False)
+
 # ============================================================
 # FUNCTION TO PRINT METRICS
 # ============================================================
+
 def print_metrics(y_true, probs):
 
     preds = (probs >= 0.5).astype(int)
@@ -162,37 +188,22 @@ def print_metrics(y_true, probs):
     print("\nConfusion Matrix")
     print(cm)
 
-    print("\n===== CLASS DISTRIBUTION =====")
-    print("Total Sensitive:", sensitive_total)
-    print("Total Normal:", normal_total)
+    print("\nTrue Positive:",TP)
+    print("True Negative:",TN)
+    print("False Positive:",FP)
+    print("False Negative:",FN)
 
-    print("\n===== CONFUSION MATRIX DETAILS =====")
+    print("\nFPR:",round(FPR*100,2),"%")
+    print("FNR:",round(FNR*100,2),"%")
 
-    print("True Positive:", TP, 
-          f"({TP/sensitive_total*100:.2f}%)")
-
-    print("False Negative:", FN,
-          f"({FN/sensitive_total*100:.2f}%)")
-
-    print("True Negative:", TN,
-          f"({TN/normal_total*100:.2f}%)")
-
-    print("False Positive:", FP,
-          f"({FP/normal_total*100:.2f}%)")
-
-    print("\n===== PERFORMANCE METRICS =====")
-
-    print("Precision:", f"{precision*100:.2f}%")
-    print("Recall (TPR):", f"{recall*100:.2f}%")
-    print("Specificity (TNR):", f"{specificity*100:.2f}%")
-
-    print("False Positive Rate (FPR):", f"{FPR*100:.2f}%")
-    print("False Negative Rate (FNR):", f"{FNR*100:.2f}%")
 # ============================================================
 # STEP 6: TRAIN FINAL MODELS
 # ============================================================
 
 NUM_FINAL_MODELS=5
+
+test_prediction_log=pd.DataFrame()
+test_prediction_log["true_label"]=y_test
 
 for m in range(NUM_FINAL_MODELS):
 
@@ -214,35 +225,50 @@ for m in range(NUM_FINAL_MODELS):
 
     clf.fit(X_balanced,y_balanced)
 
-    # ----------------------------------
-    # TRAIN (BALANCED DATA)
-    # ----------------------------------
-
+    # TRAIN BALANCED
     print("\n--- TRAIN (Balanced subset) ---")
-
     probs=clf.predict_proba(X_balanced)[:,1]
-
     print_metrics(y_balanced,probs)
 
-    # ----------------------------------
-    # TRAIN (FULL TRAIN DATA)
-    # ----------------------------------
-
+    # TRAIN FULL
     print("\n--- TRAIN (Full training set) ---")
-
     probs=clf.predict_proba(X_train)[:,1]
-
     print_metrics(y_train,probs)
 
-    # ----------------------------------
     # TEST
-    # ----------------------------------
-
     print("\n--- TEST (Full test set) ---")
-
     probs=clf.predict_proba(X_test)[:,1]
+
+    preds=(probs>=0.5).astype(int)
 
     print_metrics(y_test,probs)
 
     print("\nClassification Report")
-    print(classification_report(y_test,(probs>=0.5)))
+    print(classification_report(y_test,preds))
+
+    # Save predictions
+    test_prediction_log[f"model_{m+1}_prob"]=probs
+    test_prediction_log[f"model_{m+1}_pred"]=preds
+
+# ============================================================
+# ANALYZE HARD REQUESTS
+# ============================================================
+
+pred_cols=[c for c in test_prediction_log.columns if "pred" in c]
+
+test_prediction_log["misclassified_count"]=(
+    test_prediction_log[pred_cols].values !=
+    test_prediction_log["true_label"].values.reshape(-1,1)
+).sum(axis=1)
+
+test_prediction_log.to_csv("model_predictions_analysis.csv",index=False)
+
+print("\nSaved model_predictions_analysis.csv")
+
+hard_requests=test_prediction_log[
+    test_prediction_log.misclassified_count==NUM_FINAL_MODELS
+]
+
+hard_requests.to_csv("always_wrong_requests.csv",index=False)
+
+print("\nSaved always_wrong_requests.csv")
